@@ -34,7 +34,7 @@ uint8_t readReg(uint8_t reg) {// 读寄存器函数
     Wire.write(reg);
     Wire.endTransmission(false);
 
-    Wire.requestFrom(MMC5603_ADDR, 1);
+    Wire.requestFrom((uint8_t)MMC5603_ADDR, (uint8_t)1);
     return Wire.read();
 }
 
@@ -43,7 +43,7 @@ void readMulti(uint8_t reg, uint8_t* buf, uint8_t len) {// 读多个寄存器函
     Wire.write(reg);
     Wire.endTransmission(false);
 
-    Wire.requestFrom(MMC5603_ADDR, len);
+    Wire.requestFrom((uint8_t)MMC5603_ADDR, len);
     for (int i = 0; i < len; i++) {
         buf[i] = Wire.read();
     }
