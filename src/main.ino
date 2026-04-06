@@ -54,7 +54,7 @@ void setup() {
   Serial.begin(921600);
   Wire.begin(SDA_PIN, SCL_PIN, 400000);  // 设置SDA和SCL引脚，400kHz速率
   delay(10);
-  
+
   // 初始化所有MMC5603传感器
   for (uint8_t mux = 0; mux < 2; mux++) {
     uint8_t addr = (mux == 0) ? I2C_ADDR_1 : I2C_ADDR_2;
@@ -64,7 +64,7 @@ void setup() {
       writeReg(0x1B, 0x20);      // Auto_SR_en=1, 启用自动SET/RESET（自动去磁）
     }
   }
-  
+
   Serial.println("I2C Multiplexer & MMC5603 Initialized with Auto SET/RESET");
 }
 
@@ -75,7 +75,7 @@ void selectChannel(uint8_t addr, uint8_t channel) {
   // 设置对应通道的位为1
   // 例如：如果选择第3个通道，那么控制字节应该是 0b00001000 (即8)
   controlByte = 1 << channel;  // 左移1到指定的通道位置
-  
+
   // 通过I2C发送控制字节
   Wire.beginTransmission(addr);  // 向指定I2C地址发送数据
   Wire.write(controlByte);       // 发送控制字节，启用选定的通道
@@ -97,57 +97,60 @@ void readSensorData(uint8_t mux_addr, uint8_t channel, uint32_t *x, uint32_t *y,
   uint8_t buf[9];
   readMulti(0x00, buf, 9);
 
-  // 拼接数据
+  // 拼接数据（20位模式）
+  // 寄存器布局: Xout0(0x00) Xout1(0x01) Yout0(0x02) Yout1(0x03) Zout0(0x04) Zout1(0x05) Xout2(0x06) Yout2(0x07) Zout2(0x08)
+  // Xout2/Yout2/Zout2 的低4位存放 Xout[3:0]/Yout[3:0]/Zout[3:0]
   *x = ((uint32_t)buf[0] << 12) |
        ((uint32_t)buf[1] << 4)  |
-       ((uint32_t)(buf[6] >> 4));
+       ((uint32_t)(buf[6] & 0x0F));
 
   *y = ((uint32_t)buf[2] << 12) |
        ((uint32_t)buf[3] << 4)  |
-       ((uint32_t)(buf[7] >> 4));
+       ((uint32_t)(buf[7] & 0x0F));
 
   *z = ((uint32_t)buf[4] << 12) |
        ((uint32_t)buf[5] << 4)  |
-       ((uint32_t)(buf[8] >> 4));
+       ((uint32_t)(buf[8] & 0x0F));
 }
 
 void loop() {
   // 非阻塞状态机（16个传感器并行测量）
-  
+
   if (state == START_MEASURE) {
     // 第1阶段：一次性启动全部16个传感器的测量
     for (uint8_t i = 0; i < 16; i++) {
       uint8_t mux_idx = i / 8;
       uint8_t ch = i % 8;
       uint8_t addr = (mux_idx == 0) ? I2C_ADDR_1 : I2C_ADDR_2;
-      
+
       startMeasurement(addr, ch);
     }
-    
+
     // 记录时间戳，转入等待状态
     t_start = micros();
     state = WAIT;
   }
-  
+
   else if (state == WAIT) {
     // 第2阶段：非阻塞等待
-    // 转换时间1.2ms + I2C/MUX开销 ≈ 1.5-1.8ms
-    // 工程建议：2000µs（保证最慢器件完成）
-    if (micros() - t_start > 2000) {
+    // BW=11 时单通道测量时间 1.2ms，三轴顺序测量约 3.6ms+
+    // 加上 Auto SR 的 SET 操作（375ns 脉冲 + 1ms 等待），总时间约 5ms+
+    // 设置 6000µs 留足余量
+    if (micros() - t_start > 6000) {
       state = READ;
     }
   }
-  
+
   else if (state == READ) {
     // 第3阶段：一次性读取全部16个传感器数据
     for (uint8_t i = 0; i < 16; i++) {
       uint8_t mux_idx = i / 8;
       uint8_t ch = i % 8;
       uint8_t addr = (mux_idx == 0) ? I2C_ADDR_1 : I2C_ADDR_2;
-      
+
       readSensorData(addr, ch, &sensor_data[i].x, &sensor_data[i].y, &sensor_data[i].z);
     }
-    
+
     // 输出一行帧数据（CSV格式）- 避免printf的格式解析开销
     Serial.print("F,");
     for (uint8_t i = 0; i < 16; i++) {
@@ -159,7 +162,7 @@ void loop() {
       if (i < 15) Serial.write(',');
     }
     Serial.println();
-    
+
     // 回到START_MEASURE状态，循环
     state = START_MEASURE;
   }
