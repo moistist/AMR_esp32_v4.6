@@ -17,8 +17,8 @@
 #define MMC5603_ADDR 0x30
 
 // 采样频率
-#define SENSOR_FREQ_HZ 120
-#define SENSOR_PERIOD_US (1000000 / SENSOR_FREQ_HZ)  // ~8333µs
+#define SENSOR_FREQ_HZ 200
+#define SENSOR_PERIOD_US (1000000 / SENSOR_FREQ_HZ)  // 5000µs
 
 // ==================== 全局变量 ====================
 
@@ -71,13 +71,13 @@ void selectChannel(TwoWire &bus, uint8_t addr, uint8_t channel) {
 
 // ==================== 传感器操作 ====================
 
-// 初始化所有 16 个传感器为连续测量模式（ODR=120Hz）
+// 初始化所有 16 个传感器为连续测量模式（ODR=200Hz）
 void initAllSensors() {
   for (uint8_t ch = 0; ch < 8; ch++) {
     // 总线 0：传感器 #0 ~ #7
     selectChannel(Wire, I2C_ADDR_1, ch);
     writeReg(Wire, 0x1C, 0x03);   // BW[1:0]=11，最大带宽（单通道 ~1.2ms）
-    writeReg(Wire, 0x1A, SENSOR_FREQ_HZ);  // 设置 ODR = 120Hz
+    writeReg(Wire, 0x1A, SENSOR_FREQ_HZ);  // 设置 ODR = 200Hz
     writeReg(Wire, 0x1B, 0x20);   // Auto_SR_en=1（自动 SET/RESET 去磁）
     writeReg(Wire, 0x1B, 0xA0);   // bit7=Cmm_freq_en + bit5=Auto_SR_en
     writeReg(Wire, 0x1D, 0x10);   // bit4=Cmm_en（进入连续测量模式）
@@ -136,11 +136,11 @@ void setup() {
   initAllSensors();
 
   t_next = micros();
-  Serial.println("Dual-I2C MMC5603 Continuous Mode Initialized (120Hz)");
+  Serial.println("Dual-I2C MMC5603 Continuous Mode Initialized (200Hz)");
 }
 
 void loop() {
-  // 定时轮询：每 8333µs（120Hz）读取一次全部传感器
+  // 定时轮询：每 5000µs（200Hz）读取一次全部传感器
   if ((int32_t)(micros() - t_next) >= 0) {
     t_next += SENSOR_PERIOD_US;
 
