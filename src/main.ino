@@ -22,8 +22,6 @@
 
 // ==================== 全局变量 ====================
 
-uint32_t t_next = 0;
-
 // 第二条 I2C 总线实例
 TwoWire I2Cone = TwoWire(1);
 
@@ -31,6 +29,15 @@ TwoWire I2Cone = TwoWire(1);
 struct SensorData {
   uint32_t x, y, z;
 } sensor_data[16];
+
+// 互斥锁：保护 sensor_data 的并发访问
+SemaphoreHandle_t dataMutex;
+
+// 任务完成通知：两个读取任务完成后通知输出任务
+TaskHandle_t taskI2C0Handle = NULL;
+TaskHandle_t taskI2C1Handle = NULL;
+volatile bool bus0Done = false;
+volatile bool bus1Done = false;
 
 // ==================== I2C 操作函数 ====================
 
@@ -110,16 +117,39 @@ void readSensorData(TwoWire &bus, uint8_t mux_addr, uint8_t channel,
   *z = ((uint32_t)buf[4] << 12) | ((uint32_t)buf[5] << 4) | ((uint32_t)(buf[8] & 0x0F));
 }
 
-// 交错读取全部 16 个传感器（配对读取，最小化时间偏差）
-// 读取顺序: (#0,#8) → (#1,#9) → (#2,#10) → ... → (#7,#15)
-void readAllSensors() {
-  for (uint8_t ch = 0; ch < 8; ch++) {
-    // 总线 0：读取通道 ch 的传感器（#0~#7）
-    readSensorData(Wire, I2C_ADDR_1, ch,
-                   &sensor_data[ch].x, &sensor_data[ch].y, &sensor_data[ch].z);
-    // 总线 1：读取同一通道 ch 的传感器（#8~#15）
-    readSensorData(I2Cone, I2C_ADDR_2, ch,
-                   &sensor_data[ch + 8].x, &sensor_data[ch + 8].y, &sensor_data[ch + 8].z);
+// ==================== FreeRTOS 任务 ====================
+
+// 任务 0：Core 0 上读取总线 0 的 8 个传感器（#0 ~ #7）
+void taskReadBus0(void *param) {
+  for (;;) {
+    // 等待主任务发出读取信号
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+    // 读取传感器 #0 ~ #7
+    for (uint8_t ch = 0; ch < 8; ch++) {
+      readSensorData(Wire, I2C_ADDR_1, ch,
+                     &sensor_data[ch].x, &sensor_data[ch].y, &sensor_data[ch].z);
+    }
+
+    // 标记完成
+    bus0Done = true;
+  }
+}
+
+// 任务 1：Core 1 上读取总线 1 的 8 个传感器（#8 ~ #15）
+void taskReadBus1(void *param) {
+  for (;;) {
+    // 等待主任务发出读取信号
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+    // 读取传感器 #8 ~ #15
+    for (uint8_t ch = 0; ch < 8; ch++) {
+      readSensorData(I2Cone, I2C_ADDR_2, ch,
+                     &sensor_data[ch + 8].x, &sensor_data[ch + 8].y, &sensor_data[ch + 8].z);
+    }
+
+    // 标记完成
+    bus1Done = true;
   }
 }
 
@@ -136,27 +166,45 @@ void setup() {
   // 初始化所有传感器为连续测量模式
   initAllSensors();
 
-  t_next = micros();
-  Serial.println("Dual-I2C MMC5603 Continuous Mode Initialized (200Hz)");
+  // 创建互斥锁
+  dataMutex = xSemaphoreCreateMutex();
+
+  // 创建读取任务，分别绑定到两个 CPU 核心
+  xTaskCreatePinnedToCore(taskReadBus0, "I2C0_Read", 4096, NULL, 2, &taskI2C0Handle, 0);
+  xTaskCreatePinnedToCore(taskReadBus1, "I2C1_Read", 4096, NULL, 2, &taskI2C1Handle, 1);
+
+  Serial.println("FreeRTOS Dual-Core Dual-I2C MMC5603 Initialized (200Hz)");
 }
 
 void loop() {
-  // 定时轮询：每 5000µs（200Hz）读取一次全部传感器
-  if ((int32_t)(micros() - t_next) >= 0) {
-    t_next += SENSOR_PERIOD_US;
+  uint32_t t_start = micros();
 
-    readAllSensors();
+  // 1. 同时唤醒两个读取任务（两条总线并行读取）
+  bus0Done = false;
+  bus1Done = false;
+  xTaskNotifyGive(taskI2C0Handle);
+  xTaskNotifyGive(taskI2C1Handle);
 
-    // 输出一帧 CSV 数据
-    Serial.print("F,");
-    for (uint8_t i = 0; i < 16; i++) {
-      Serial.print(sensor_data[i].x);
-      Serial.write(',');
-      Serial.print(sensor_data[i].y);
-      Serial.write(',');
-      Serial.print(sensor_data[i].z);
-      if (i < 15) Serial.write(',');
-    }
-    Serial.println();
+  // 2. 等待两个任务都完成
+  while (!bus0Done || !bus1Done) {
+    vTaskDelay(1);  // 让出 CPU，等待并行读取完成
+  }
+
+  // 3. 输出一帧 CSV 数据
+  Serial.print("F,");
+  for (uint8_t i = 0; i < 16; i++) {
+    Serial.print(sensor_data[i].x);
+    Serial.write(',');
+    Serial.print(sensor_data[i].y);
+    Serial.write(',');
+    Serial.print(sensor_data[i].z);
+    if (i < 15) Serial.write(',');
+  }
+  Serial.println();
+
+  // 4. 等待到下一个采样周期
+  uint32_t elapsed = micros() - t_start;
+  if (elapsed < SENSOR_PERIOD_US) {
+    delayMicroseconds(SENSOR_PERIOD_US - elapsed);
   }
 }
