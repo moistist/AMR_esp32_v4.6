@@ -26,14 +26,13 @@
 TwoWire I2Cone = TwoWire(1);
 
 // 数据缓冲区（16 个传感器的三轴数据）
+// 注意：taskReadBus0 写入 sensor_data[0~7]，taskReadBus1 写入 sensor_data[8~15]
+// 两个任务写入不同区域，无需互斥锁
 struct SensorData {
   uint32_t x, y, z;
 } sensor_data[16];
 
-// 互斥锁：保护 sensor_data 的并发访问
-SemaphoreHandle_t dataMutex;
-
-// 任务完成通知：两个读取任务完成后通知输出任务
+// 任务完成标志
 TaskHandle_t taskI2C0Handle = NULL;
 TaskHandle_t taskI2C1Handle = NULL;
 volatile bool bus0Done = false;
@@ -125,7 +124,7 @@ void taskReadBus0(void *param) {
     // 等待主任务发出读取信号
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
-    // 读取传感器 #0 ~ #7
+    // 读取传感器 #0 ~ #7（写入 sensor_data[0~7]，与 taskReadBus1 无冲突）
     for (uint8_t ch = 0; ch < 8; ch++) {
       readSensorData(Wire, I2C_ADDR_1, ch,
                      &sensor_data[ch].x, &sensor_data[ch].y, &sensor_data[ch].z);
@@ -142,7 +141,7 @@ void taskReadBus1(void *param) {
     // 等待主任务发出读取信号
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
-    // 读取传感器 #8 ~ #15
+    // 读取传感器 #8 ~ #15（写入 sensor_data[8~15]，与 taskReadBus0 无冲突）
     for (uint8_t ch = 0; ch < 8; ch++) {
       readSensorData(I2Cone, I2C_ADDR_2, ch,
                      &sensor_data[ch + 8].x, &sensor_data[ch + 8].y, &sensor_data[ch + 8].z);
@@ -166,10 +165,8 @@ void setup() {
   // 初始化所有传感器为连续测量模式
   initAllSensors();
 
-  // 创建互斥锁
-  dataMutex = xSemaphoreCreateMutex();
-
   // 创建读取任务，分别绑定到两个 CPU 核心
+  // 两个任务写入 sensor_data 的不同区域（0~7 和 8~15），无需互斥锁
   xTaskCreatePinnedToCore(taskReadBus0, "I2C0_Read", 4096, NULL, 2, &taskI2C0Handle, 0);
   xTaskCreatePinnedToCore(taskReadBus1, "I2C1_Read", 4096, NULL, 2, &taskI2C1Handle, 1);
 
