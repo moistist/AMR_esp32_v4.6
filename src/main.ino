@@ -110,15 +110,16 @@ void readSensorData(TwoWire &bus, uint8_t mux_addr, uint8_t channel,
   *z = ((uint32_t)buf[4] << 12) | ((uint32_t)buf[5] << 4) | ((uint32_t)(buf[8] & 0x0F));
 }
 
-// 读取全部 16 个传感器
+// 交错读取全部 16 个传感器（配对读取，最小化时间偏差）
+// 读取顺序: (#0,#8) → (#1,#9) → (#2,#10) → ... → (#7,#15)
 void readAllSensors() {
-  for (uint8_t i = 0; i < 16; i++) {
-    uint8_t mux_idx = i / 8;
-    uint8_t ch = i % 8;
-    TwoWire &bus = (mux_idx == 0) ? Wire : I2Cone;
-    uint8_t addr = (mux_idx == 0) ? I2C_ADDR_1 : I2C_ADDR_2;
-    readSensorData(bus, addr, ch,
-                   &sensor_data[i].x, &sensor_data[i].y, &sensor_data[i].z);
+  for (uint8_t ch = 0; ch < 8; ch++) {
+    // 总线 0：读取通道 ch 的传感器（#0~#7）
+    readSensorData(Wire, I2C_ADDR_1, ch,
+                   &sensor_data[ch].x, &sensor_data[ch].y, &sensor_data[ch].z);
+    // 总线 1：读取同一通道 ch 的传感器（#8~#15）
+    readSensorData(I2Cone, I2C_ADDR_2, ch,
+                   &sensor_data[ch + 8].x, &sensor_data[ch + 8].y, &sensor_data[ch + 8].z);
   }
 }
 
